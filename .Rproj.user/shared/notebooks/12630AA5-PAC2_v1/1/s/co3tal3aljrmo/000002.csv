@@ -1,0 +1,12 @@
+"0","dds <- DESeq(dds, 
+            parallel = TRUE,
+            betaPrior = FALSE)
+
+resultsNames(dds)
+"
+"1","[1]"
+"1"," ""Intercept""       "
+"1"," ""Group_ELI_vs_NIT"""
+"1"," ""Group_SFI_vs_NIT"""
+"1","
+"

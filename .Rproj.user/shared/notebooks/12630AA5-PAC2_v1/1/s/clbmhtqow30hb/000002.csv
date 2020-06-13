@@ -1,0 +1,9 @@
+"0","res.NITvsSFI$symbol <- mapIds(edb,
+                     keys=row.names(res.NITvsSFI),
+                     column=""SYMBOL"",
+                     keytype=""GENEID"",
+                     multiVals=""first"")
+"
+"2","Error in `[[<-`(`*tmp*`, name, value = character(0)) : 
+  0 elements in value to replace 42857 elements
+"

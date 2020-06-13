@@ -1,0 +1,9 @@
+"0","se <- DESeqDataSetFromMatrix(countData = countData,
+                              colData = DataFrame(new.targets),
+                              design = ~Group,
+                             colnames(countData) <- NULL,
+                             tidy = FALSE,ignoreRank = F)
+"
+"2","Error in DESeqDataSetFromMatrix(countData = countData, colData = DataFrame(new.targets),  : 
+  could not find function ""DESeqDataSetFromMatrix""
+"

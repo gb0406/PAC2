@@ -1,0 +1,9 @@
+"0","NIT<-targets[which(targets$Group==""NIT"" & targets$molecular_data_type==""RNA Seq (NGS)""),]
+ELI<-targets[which(targets$Group==""ELI"" & targets$molecular_data_type==""RNA Seq (NGS)""),]
+SFI<-targets[which(targets$Group==""SFI"" & targets$molecular_data_type==""RNA Seq (NGS)""),]
+# Escogo 10 muestras al azar de los grupos NIT y SFI y uso todos los datos de ELI
+NIT<-NIT[NIT$ShortName %in% sample(unique(NIT$ShortName),10),]
+head(NIT)
+"
+"0","SFI<-SFI[SFI$ShortName %in% sample(unique(SFI$ShortName),10),]"
+"0","head(SFI)"

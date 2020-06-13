@@ -1,0 +1,727 @@
+---
+title: |
+  | PAC 2 ADO
+  | Análisis de expresión RNA-Seq
+author: "Giannina Bambaren Capurro"
+output: 
+   prettydoc::html_pretty:
+    toc: true
+    theme: hpstr
+    highlight: github
+    number_sections: true
+    fig_cap: yes
+editor_options: 
+  chunk_output_type: console
+bibliography: bibliografia.bib
+link-citations: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, cache = TRUE, warning = FALSE, 
+                      comment = NA, prompt = TRUE, tidy = FALSE, 
+                      fig.width = 7, fig.height = 7, fig_caption = TRUE,
+                      cache=FALSE,fig.align='center')
+
+```
+
+<div style="text-align: justify">
+
+# Abstract
+
+En este estudio realizaremos el análisis de expresión de 28 muestras de tejido tiroideo obtenidas mediante RNA-Seq (NGS) de tipo GTEx (Genotype-Tissue Expression). Las muestra estan divididas en tres grupos diferenciados de acuerdo a la manipulacion que se les ha dado a estas, de este modo analizaremos 10 muestras controles "Not infiltrated tissues", 10 "Small focal infiltrates" y 8 "Extensive lymphoid infiltrates". Compareremos de ellas su expresión transcripcional diferencial, anotación génica y análisis de significación biológica.
+
+El código utilizado para este análisis se proporcionará en un repositorio de github:[https://github.com/gb0406/PAC2]
+
+# Objetivos
+
+En este estudio se pretende:
+
+  - Procesar los datos obtenidos mediante RNA-seq a un formato legible
+  
+  - Poner en relevancia las diferencias génicas de los diferentes contrastes entre los grupos
+  
+  - Realizar un análisis de significación biólogica de contrastes realizados
+
+
+
+```{r librerias,echo=FALSE}
+require(AnnotationDbi)
+require(BiocManager)
+require(ensembldb)
+require(EnsDb.Hsapiens.v86)
+require(EnhancedVolcano)
+require(kableExtra)
+require(knitr)
+library(org.Hs.eg.db)
+require(clusterProfiler)
+require(enrichplot)
+require(limma)
+require(edgeR)
+require(ggplot2)
+require(reshape)
+require(BiocParallel)
+require(DESeq2)
+require(S4Vectors)
+require(BiocGenerics)
+require(stats4)
+require(GenomicAlignments)
+require(dplyr)
+require(ggplot2)
+require(knitr)
+require(pheatmap)
+require(RColorBrewer)
+library("genefilter")
+
+```
+ 
+
+# Materiales y Métodos
+
+## Naturaleza de los datos
+
+La secuenciación RNA-seq (NGS) se usa para medir los niveles de expresión génica a través de sus transcritos para una gran variedad de muestras. En este caso nuestras muestras pertenecen a RNA-seq  de tipo GTEx (Genotype-Tissue Expression) ya que son muestra de tejido tiroideo. 
+
+En el archivo *targets.cvs* tenemos la información de nuestras muestas nuestras obtenidas de los repositorios de datos públicos Sequence Read Archive (SRA),  que albergan> 50,000 muestras de RNA-seq humanos.
+
+Normalmente, los datos depositados se proporcionan como lecturas de secuenciación sin procesar, y son costosas para los investigadores de analizar. sin embargo, en nuestro caso estas muestras se encuentran preprocesadas y sus conteos los tenemos en el archivo *counts.cvs*.
+
+```{r reads}
+
+targets<-read.csv("targets.csv", row.names = 1)
+counts<-read.csv("counts.csv", sep = ";")
+```
+
+Vamos a escoger los datos de forma aleatoria del archivo *targets*, los pasos que seguiremos serán los siguientes:
+
+  - Separaremos el dataset por grupos: **ELI, NIT, SFI**, de muestras que sean solo de RNA Seq.  Cada grupo de la muestras presetan:
+  
+  
+  - Not infiltrated tissues (NIT): 236 samples
+        
+  - Small focal infiltrates (SFI): 42 samples
+        
+  - Extensive lymphoid infiltrates (ELI): 14 samples
+  
+  
+  - Usamos `sample unique` para seleccionar 10 muestras al azar de los set del grupo **NIT y SFI** ya que en el caso de **ELI** partiamos de solo 8 muestras.
+  
+  - Unimos los tres grupos usando `rbind` generamos un nuevo dataset que llamaremos *new.targets*
+  
+  - Mediante `subset` seleccionaremos los contajes del archivo *counts* de las nuestras escogidas para este estudio, a este nuevo set de contajes lo llamaremos *new.counts*
+  
+  - Retocamos *new.counts* cambiando el nombre de las columnas por el nombre corto de las muestras, añadiendo como `rownames` los identificadores de Ensembl que previamente hemos eliminado su número de versión mediante `gsub` 
+```{r reads2,fig.cap="Tabla 1: NIT Targets"}
+#Agrupar los datos por grupo que pertenezcan a datos de expresión RNA Seq
+NIT<-targets[which(targets$Group=="NIT" & 
+                     targets$molecular_data_type=="RNA Seq (NGS)"),]
+ELI<-targets[which(targets$Group=="ELI" & 
+                     targets$molecular_data_type=="RNA Seq (NGS)"),]
+SFI<-targets[which(targets$Group=="SFI" & 
+                     targets$molecular_data_type=="RNA Seq (NGS)"),]
+# Escogo 10 muestras al azar 
+NIT<-NIT[NIT$ShortName %in% sample(unique(NIT$ShortName),10),]
+kable(NIT[1:3,],caption = "Tabla 1: NIT Targets")%>% 
+  kable_styling(bootstrap_options = "striped", full_width = F, 
+                position = "center",font_size = 10)
+```
+
+
+```{r reads3,fig.cap="Tabla 2: SFI Targets"}
+SFI<-SFI[SFI$ShortName %in% sample(unique(SFI$ShortName),10),]
+kable(SFI[1:3,])%>%
+  kable_styling(bootstrap_options = "striped", 
+                full_width = F, position = "center",
+                font_size = 10)
+# uno los los datos en un dataframe único
+new.targets<-rbind(NIT,SFI,ELI)
+# vector con el nombre de las muestas
+names.count<-new.targets$Sample_Name
+# selecciono de los contajes de las muestras escogidas 
+#creo un nuevo df de contajes
+new.counts<-subset(counts, select =names.count)
+colnames(new.counts)<-factor(new.targets$ShortName) 
+#cambio el nombre a el nombre corto de las muestras
+geneid<-counts$X # identificadores Ensembl
+geneid <- gsub("\\..*", "", geneid, fixed = FALSE) 
+# Eliminamos el número de versión
+row.names(new.counts)<-geneid 
+# Establecemos los identificadores como rownames del set new.counts
+
+
+```
+
+
+## Análisis RNA-seq utilizando DESeq2:
+
+### Obtención de los datos
+
+
+En el histograma de cada  muestra seleccionada vemos que nuestran muestas tienen contajes bajas, la mayoría de transcritos no esta presentan en ninguna de las muestras, por lo cual tenemos valores de contajes cero tan altos.
+
+```{r deseq1,fig.cap="Fig. 1: Histograma de los contajes para cada muestra",echo=FALSE}
+
+# Generamos un histograma con los contajes de cada muestra
+pseudoCount = log2(new.counts + 1)
+#histograma de las muestras 1
+ggplot(melt(pseudoCount),aes(x=value)) +ylab(expression(log[2](count + 1))) +geom_histogram(colour = "white", fill = "#525252", binwidth = 0.6) + facet_wrap(~variable)
+```
+
+En el diagrama de cajas de las muestras podemos ver que estan no se encuentran normalizadas y presentan valores muy variables entre ellas. 
+
+```{r deseq2,fig.cap="Fig. 2: Boxplot de contajes por muestra",echo=FALSE}
+#boxplot de todas las muestras
+df = melt(pseudoCount, variable_name = "Samples")
+df = data.frame(df, Condition = substr(df$Samples, 1, 28))
+ggplot(df, aes(x = Samples, y = value, fill = Condition)) + geom_boxplot() + xlab("") +
+ylab(expression(log[2](count + 1)))+theme(axis.text.x=element_text(angle=90,hjust=1))
+```
+
+##  Procesado de los datos:
+
+### Creación del Summarized experiment y DESeqDataSet
+
+Para generar nuestro sumarized experiment hemos relacionado los nombres de la colunma de nuestra tabla de contajes con las filas de tabla de new.target donde tenemos el resumen del experimento. Anteriormente nombramos como nombres de fila cada uno de los transcritos de Ensembl y hemos renombrado cada experimental por el nombre corto de las muestras. 
+
+En el objeto **DESeqDataSet**, generado a partir del paquete de Bioconductor *DESeq"* @deseq2. Este objeto lo generaremos con la información de nuestra matriz de conteos  "new.counts" y la tabla de información del experimento "new.targets".
+
+vVamos a relacionar el efecto de las muestras por grupo con el sexo de los pacientes. Para ello en DESeqDataSet utilizamos la formula de diseño *~Group* se utiliza una notación parecida a un regresión lineal.
+
+Para la condición de grupo de las muestras estableemos como muestra de referencia o control a las nuestras no filtradaa *NIT*.
+
+```{r deseq3}
+
+# comprobamos que las columnas y las filas tengan el mismo identificador
+all(rownames(new.targets) == colnames(new.counts))
+head(rownames(new.targets),3)
+head(colnames(new.counts),3)
+#Vemos que en el caso de new.targets tenemos como 
+#identificador de fila al SRA de muestra
+#Mientras que en el caso de los contajes tenemos como id el nombre corto 
+#Vamos a igualar los dos nombres para no tener problemas en el agrupamiento
+row.names(new.targets) = colnames(new.counts)
+all(rownames(new.targets) == colnames(new.counts))
+dds <- DESeqDataSetFromMatrix(countData = new.counts,
+                              colData = DataFrame(new.targets),
+                              design = ~ Group,
+                             tidy = FALSE,ignoreRank = F)
+
+
+dds$Group <- relevel(dds$Group, ref = "NIT")
+dds
+```
+
+### Filtrado 
+
+Como vimos en los histogramas anteriores, los conteos muestran para la mayoría de transcritos valores igual a cero, de modo que vamos a filtrar estos datos:
+
+
+```{r deseq4}
+dds <- dds[ rowSums(counts(dds)) > 1, ]
+```
+
+De modo que pasamos de tener 56202 transcritos a `r nrow(dds)`
+
+### Normalización de los datos: Log2 y rlog
+
+Como vimos en el diagrama de cajas anterior, las muestras no se encuentran normalizadas. Vamos a normalizar los conteos de las muestras utilizando la funcion *log2* y *rlog.*
+
+Hemos escogido rlog ya que tenemos un tamaño muestral pequeño (n=28), de modo que esta funcion trabajará mejor para este tamaño muestral que *vst*.
+
+
+```{r deseq5,fig.cap="Tabla 3: Normalización rlog"}
+
+dds<-estimateSizeFactors(dds)
+# aplicamos la transformación medialte rlog
+rld<-rlog(dds,blind = FALSE)
+tn<-t(data.frame(assay(rld[1:3,])))
+kable(tn,caption = "Tabla 4: Normalización Log2")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, 
+                position = "center",font_size = 10)
+```
+
+
+```{r deseq6,fig.cap="Tabla 4: Normalización Log2"}
+# transformamos mediante log2 
+norm_counts_log<-log2(counts(dds, normalized=TRUE)+1)
+tnl<-t(data.frame(norm_counts_log[1:3,]))
+kable(tnl,caption = "Tabla 4: Normalización Log2")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, 
+                position = "center",font_size = 10)
+# Creamos una dataframe que almacene los resultados 
+#de las dos transformaciones
+# creamos un columna final que nos especifique que 
+#transformación han seguido los datos
+norm_counts<- bind_rows(
+  as_data_frame(norm_counts_log) %>%
+         mutate(transformation = "log2(x + 1)"),
+  as_data_frame(assay(rld)[, 1:2]) %>% 
+    mutate(transformation = "rlog"))
+
+# Compararemos las dos transformaciones visualmente 
+colnames(norm_counts)[1:2] <- c("x", "y")
+```
+
+
+```{r deseq7,fig.cap="Fig. 3: Comparación entre Log2 y Rlog"}
+ggplot(norm_counts, aes(x = x, y = y)) + geom_hex(bins = 80) +
+  coord_fixed() + facet_grid( . ~ transformation) 
+```
+
+
+```{r deseq8,eval=FALSE}
+# guardamos los datos para un uso posterior
+write.csv(norm_counts, file="result/normalized_counts.csv")
+```
+
+
+La principal diferencia entre estas dos transformaciones es que la transformación mediante rlog comprime los diferencias de las muestras con conteos bajos, mientras que el log2+1 podemos apreciar esas diferencias ya que se mantiene la dispersión entre las muestras.
+
+### Distancia entre las muestras:
+
+En este paso evaluaremos la similitud entre las muestras mediante la generación de una matriz de distancias entre las muestras.
+
+Para ello utilizaremos `dist(t(x))` que nos generará una matriz de distancia de muestra contra muestra. En nuestro caso tenemos 28 muestras de modo que la visualización de la matriz es compleja, por ello utilizaremos un mapa de calor para la visualización del agrupamiento y distancias de las muestras.
+
+```{r deseq9,fig.cap="Fig. 4: Diagrama de agrupación de los genes por muestra",echo=FALSE}
+
+sdist<-dist(t(assay(rld)))
+mdist<-as.matrix(sdist)
+rownames(mdist)<-paste(rld$Group,rld$sex,sep = "-")
+colnames(mdist)<-NULL
+colour<-colorRampPalette(rev(brewer.pal(8,"Dark2")))(255)
+pheatmap(mdist,
+         clustering_distance_rows = sdist,
+         clustering_distance_cols = sdist,
+         col = colour)
+```
+
+Vemos que los grupos no estan bien agrupos, sin embargo vemos que el sexo del paciente genera agrupamientos más consistentes que el grupo al cual pertenezcan las muestras.
+
+Lo mismo pasa si miramos el gráfico PCA de las muestras, no existe una diferenciación clara entre los grupos.
+
+```{r deseq10,fig.cap="Fig. 5: PCA de los contajes diferencias por grupos",echo=FALSE}
+plotPCA(rld,intgroup="Group")
+```
+
+
+## Expresión diferencial de genes
+
+Vamos a utilizar la función *DEseq* del paquete DESeq2 para canalizar los recuentos obtenidos a partir de nuestro DESeqDataset.
+
+```{r dds1}
+dds <- DESeq(dds, 
+            parallel = TRUE,
+            betaPrior = FALSE)
+
+resultsNames(dds)
+```
+
+En este punto compararemos la diferente expresión de genes entre grupos. Es decir valoraremos la diferencia expresada entre los distintos grupos de las muestras.
+
+Hemos obtenido ahora nuesto DESeqDataset con todos los parametros ajustados, se han establecido dos comparacipnes de las cuales extraeremos las tablas con los resultados de interes. En nuestro caso realizaremos una comparación adicional.
+
+
+- **NIT vs SFI**  : grupo control (NIT) contra el grupo de infiltraciones cortos (SFI)
+
+- **NIT vs ELI**  : grupo control (NIT) contra el grupo de infiltraciones largas (ELI)
+
+- **SFI vs ELI**  : Infiltraciones focales cortas (SFI) contra las infiltaciones linfoides largas (ELI)
+
+
+```{r dds2}
+# realizamos los contrastes para los tres grupos
+res.NITvsSFI<- results(dds, name = "Group_SFI_vs_NIT")
+res.ELIvsNIT<- results(dds, name = "Group_ELI_vs_NIT")
+res.SFIvsELI<- results(dds, contrast=c("Group","SFI","ELI"))
+```
+
+Vamos a considerar como valores significativos una fración del 10% de los falsos positivos para cada grupo.
+
+En la Tabla 5 podemos observar los contajes significativos para cada contraste. Vemos que no hemos obtenido grandes cantidad de genes diferenciales entre estos grupos.
+
+```{r dds3,echo=FALSE,fig.cap="Tabla 5: Conteos significativos"}
+require(kableExtra)
+sum.NITvsSFI<-sum(res.NITvsSFI$padj < 0.1, na.rm=TRUE)
+sum.ELIvsNIT<-sum(res.ELIvsNIT$padj < 0.1, na.rm=TRUE)
+sum.SFIvsELI<-sum(res.SFIvsELI$padj < 0.1, na.rm=TRUE)
+drd<-data.frame(NITvsSFI=sum.NITvsSFI,ELIvsNIT=sum.ELIvsNIT,SFIvsELI=sum.SFIvsELI)
+kable(drd,caption = "Tabla 5:Resumen de los constrastes: transcritos estadísticamente significativos (lfc < 0.1)")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 11)
+```
+
+Finalmente, conjuntaremos los genes estadísticamente significativos para cada constraste, mostramos 3 valores de cada constraste, los genes estan ordenados de forma decreciente de modo que se muestran los tres transcritos que presentan diferencias significtivas entre cada pareja.
+
+```{r dds4,echo=FALSE,fig.cap="Tabla 6 "}
+resSig.NITvsSFI<- subset(res.NITvsSFI, padj < 0.1)
+resSig.NITvsSFI<-resSig.NITvsSFI[ order(resSig.NITvsSFI$log2FoldChange, decreasing = TRUE),]
+
+kable(resSig.NITvsSFI[1:3,],caption = "Tabla 6:Control vs. infiltración focal corta (lfc < 0.1)")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+
+```{r dds5,echo=FALSE,fig.cap="Tabla 7 "}
+resSig.ELIvsNIT<- subset(res.ELIvsNIT, padj < 0.1)
+resSig.ELIvsNIT<- resSig.ELIvsNIT[ order(resSig.ELIvsNIT$log2FoldChange, decreasing = TRUE),]
+
+kable(resSig.ELIvsNIT[1:3,],caption = "Tabla 7: Control vs. infiltración linfoide extensa (lfc < 0.1)")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+
+```{r dds6,echo=FALSE,fig.cap="Tabla 8 "}
+resSig.SFIvsELI<- subset(res.SFIvsELI, padj < 0.1)
+resSig.SFIvsELI<- resSig.SFIvsELI[ order(resSig.SFIvsELI$log2FoldChange, decreasing = TRUE),]
+
+kable(resSig.SFIvsELI[1:3,],caption = "Tabla 8: Infiltración corta focal vs. extensa linfoide (lfc < 0.1)")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+
+```{r dds7,echo=FALSE,eval=FALSE}
+#Guardamos los resultados
+write.csv(as.data.frame(resSig.NITvsSFI), file="result/resSig_NITvsSFI.csv")
+write.csv(as.data.frame(resSig.ELIvsNIT),file="result/resSig_ELIvsNITs.csv")
+write.csv(as.data.frame(resSig.SFIvsELI),file="result/resSig_SFIvsELI.csv")
+```
+
+## Expresión diferencial de constrastes y agrupamiento
+
+
+### Volcano plot
+
+Utilizaremos un *Volcanoplot* para observar la expresión diferencial entre los diferentes constrastes entre los niveloesde los grupos. El Volcanoplot es una gráfica estadística utilizada ampliamente, esta evalúa la magnitud del “fold change” (M, impacto biólogico del cambio) contra la significación estadística de cada transcrito (p-valor). 
+
+Por un lado, en el eje vertical tenemos -log(pvalor) y la dispersión de la función M en el eje horizontal. Los p-valores más significativos estarán en la parte superior de la gráfica. Los genes *Up y down regulated* se encuentran de forma simétrica respecto al eje vertical, donde M=0. Con lo cual nos interesa mirar los genes que se encuentran en la parte superior de la gráfica
+
+Para la realización de estas gráficas utilizaremos el paquere de R/Bioconductor **EnhancedVolcano"**  @volcano.
+
+
+
+```{r dds8,echo=FALSE}
+library(EnhancedVolcano)
+# realizamos un constraste LFC
+reslfc.NITvsSFI<- lfcShrink(dds, contrast=c("Group","SFI","NIT"),res=res.NITvsSFI,type = 'normal')
+reslfc.ELIvsNIT<- lfcShrink(dds, contrast=c("Group","SFI","NIT"),res=res.ELIvsNIT,type = 'normal')
+reslfc.SFIvsELI<- lfcShrink(dds, contrast=c("Group","SFI","ELI"),res=res.SFIvsELI,type = 'normal')
+
+```
+
+Esta herramienta de visualización nos permite observar los cantidad de transcritos expresados diferencialmente en cada contraste, como vemos todos los constrastes tiene gran cantidad de genes que son *no signigicativos* (NS en gris), pero también este herramienta nos señala los transcritos *estadísticamente significativos* para cada constraste y se establecen diferencias de significacia entre :
+
+  - Log2 FC (en verde)
+  
+  
+  
+  - p-value (en lila)
+  
+  
+  - Ambos (en rojo)
+  
+Además se destaca el nombre nombre del transcrito más diferencialmente expresado.
+
+```{r dds9,echo=FALSE,eval=TRUE,fig.cap="Fig. 6: Volcano plot SFI vs NIT"}
+EnhancedVolcano(reslfc.NITvsSFI,
+  lab = rownames(reslfc.NITvsSFI),
+  x = 'log2FoldChange',
+  y = 'pvalue',
+  xlim = c(-5, 5),
+  title = 'NIT vs SFI')
+
+```
+
+
+```{r dds10,echo=FALSE,eval=TRUE,fig.cap="Fig. 7: Volcano plot NIT vs ELI"}
+  EnhancedVolcano(reslfc.ELIvsNIT,
+    lab = rownames(reslfc.ELIvsNIT),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    xlim = c(-5, 5),
+    title = 'NIT vs ELI')
+```
+
+
+```{r dds11,echo=FALSE,eval=TRUE,fig.cap="Fig. 8: Volcano plot SFI vs ELI"}
+  EnhancedVolcano(reslfc.SFIvsELI,
+    lab = rownames(reslfc.SFIvsELI),
+    x = 'log2FoldChange',
+    y = 'pvalue',
+    xlim = c(-3, 3),
+    title = 'SFI vs ELI')
+```
+
+### Agrupamiento de los transcritos
+
+Utilizaremos la librería **genefilter** para realizar un el agrupamientos de los genes normalizados, se seleccionará solo 30 genes y mirararemos como agrupan entre ellos respecto a los grupos que conforman. 
+
+En la figura 9 podemos ver al agrupamiento entre los grupos de la muestra respecto a sus genes normalizados, como observamos existe un efecto mosaico entre la vararibilidad de los transcritos entre los grupo siendo la mayoría muy como variable.
+
+```{r dds12,echo=FALSE,,fig.cap="Fig. 9: Agrupamiento de transcritos por grupos"}
+topVarGenes <- head(order(rowVars(assay(rld)), decreasing = TRUE), 30)
+
+mat  <- assay(rld)[topVarGenes, ]
+mat  <- mat - rowMeans(mat)
+anno <- as.data.frame(colData(rld)[, "Group"])
+rownames(anno) <- colnames(mat)
+pheatmap(mat, annotation_col = anno)
+
+```
+
+## Anotación de Resultados:
+
+En nuestros resultados tenemos como nombre de fila los ID de los transcritos de Ensembl, con lo cual añadiremos a nuestros dataframe de constrastes los nombres de los genes, para ello utilizaremos el paquete de *EnsDb.Hsapiens.v86* que nos genera anotaciones a partir de identificadores Ensembl @genoma. 
+
+Del paquete de anotación extraeremos el símbolo del gen, el nombre y su identificador Entrez, para ello utilizaremos la función *mapIds* del paquete AnnotationDbi/ensembldb @ensembl que establece un mapeo entre los identificadores y los valores de tabla. Como `keytipe` el identificador de Ensembl que en nuestro caso el el nombre de fila de los dataframe de los constrastes, con el argumento `multivals = 'list'` nos devolverá todos los valores mapeados por cada entrada.
+
+```{r dds13}
+library(EnsDb.Hsapiens.v86)
+edb <- EnsDb.Hsapiens.v86
+columns(edb)
+```
+
+
+```{r dds14,eval=TRUE,echo=FALSE}
+res.NITvsSFI$symbol <- mapIds(edb,
+                     keys=row.names(res.NITvsSFI),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="list")
+res.NITvsSFI$entrez <- mapIds(edb,
+                     keys=row.names(res.NITvsSFI),
+                     column="ENTREZID",
+                     keytype="GENEID",
+                     multiVals="list")
+res.NITvsSFI$gene.name <- mapIds(edb,
+                     keys=row.names(res.NITvsSFI),
+                     column="GENENAME",
+                     keytype="GENEID",
+                     multiVals="list")
+resOrdNS<- res.NITvsSFI[order(res.NITvsSFI$pvalue),]
+```
+
+```{r dds15,eval=TRUE, echo=FALSE}
+res.SFIvsELI$symbol <- mapIds(edb,
+                     keys=row.names(res.SFIvsELI),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="list")
+res.SFIvsELI$gene.name <- mapIds(edb,
+                     keys=row.names(res.SFIvsELI),
+                     column="GENENAME",
+                     keytype="GENEID",
+                     multiVals="list")
+res.SFIvsELI$ENTREZ <- mapIds(edb,
+                     keys=row.names(res.SFIvsELI),
+                     column="ENTREZID",
+                     keytype="GENEID",
+                     multiVals="list")
+
+resOrdSE<- res.SFIvsELI[order(res.SFIvsELI$pvalue),]
+```
+
+```{r dds16,eval=TRUE,echo=FALSE}
+res.ELIvsNIT$symbol <- mapIds(edb,
+                     keys=row.names(res.ELIvsNIT),
+                     column="SYMBOL",
+                     keytype="GENEID",
+                     multiVals="list")
+res.ELIvsNIT$entrez <- mapIds(edb,
+                     keys=row.names(res.ELIvsNIT),
+                     column="ENTREZID",
+                     keytype="GENEID",
+                     multiVals="list")
+res.ELIvsNIT$gene.name <- mapIds(edb,
+                     keys=row.names(res.ELIvsNIT),
+                     column="GENENAME",
+                     keytype="GENEID",
+                     multiVals="list")
+
+resOrdEN<- res.ELIvsNIT[order(res.ELIvsNIT$pvalue),]
+```
+
+```{r dds17,eval=FALSE,echo=FALSE}
+write.csv(as.data.frame(resOrdNS), file="result/res_NITvsSFI.csv")
+write.csv(as.data.frame(resOrdSE),file="result/res_ELIvsNITs.csv")
+write.csv(as.data.frame(resOrdEN),file="result/res_SFIvsELI.csv")
+```
+
+En las diferentes tablas podemos observar los constrastes ordenados mediante su p-valor de forma que se myestan los 5 transcritos con un p-value más bajo, ademas hemos añadido las columnas con la información extraída de *EnsDb.Hsapiens.v86*  como son el la simbología del transcrito su ID en Entrez y su nombre.
+
+```{r dds18,echo=FALSE,fig.cap="Tabla 9: Tabla genes anotados: NIT vs SFI"}
+resOrdNSx<-read.csv("result/res_NITvsSFI.csv")
+resOrdNSx <- resOrdNS[1:5,5:9 ]
+kable(resOrdNSx, booktabs = TRUE, 
+      caption = "Tabla 9: Anotación genes NIT vs SFI")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, 
+                position = "center",font_size = 11)
+```
+
+
+```{r dds19,echo=FALSE,fig.cap="Tabla 10: Tabla genes anotados: ELI vs SFI"}
+resOrdSEx<-read.csv("result/res_SFIvsELI.csv")
+resOrdSEx <- resOrdNS[1:5,5:9 ]
+kable(resOrdSEx , booktabs = TRUE, caption = "Tabla 10: Anotación genes ELI vs SFI")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 11)
+```
+
+
+```{r dds20,echo=FALSE,fig.cap="Tabla 11: Tabla genes anotados: ELI vs NIT"}
+resOrdENx<-read.csv("result/res_ELIvsNITs.csv")
+resOrdENx <- resOrdEN[1:5,5:9 ]
+kable(resOrdENx,booktabs = TRUE, caption = "Tabla 11: Anotación genes NIT vs ELI")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 11)
+```
+
+## Análisis de significación biológica (“Gene Enrichment Analysis”)
+
+Para realizar el análisis GEO, primero seleccionaremos la lista de anotaciones creada anteriormente, que contienen los genes seleccionados en cada anotación. Entonces de cada lista se comparará si los procesos biológicos en los que interviene cada conjunto de genes tienen una relación entre sí. Es decir, si en una comparación los genes seleccionados todos ellos relacionados en un proceso biológico como la división celular, etc. Esto nos daría pistas para entender las vías implicadas en cada grupo experimental.
+
+Los pasos que seguiremos para el análisis GEO serán:
+
+- Crear un lista de las tablas de anotación antes creadas:
+
+  - resOrdEN 
+  - resOrdSE
+  - resOrdNS
+
+- De cada genes seleccionar los genes con un p-valor ajustado menor a 0.15, además seleccionaremos los genes mediante los simbolos, ya que el paquete de anotación **EnsDb.Hsapiens.v86** nos relaciona los identificadores Ensembl (rownames) y nos devuelve los símbolo y el nombre del gen al que pertenece ese transcrito para poder posteriorme obtener su código GO .
+
+- Crearemos la lista de genes a analizar mediante Clusterprofiler. Para ello como paso previo, utilizaremos la funcion `bitr` que nos convierte el símbolo de cada y nos devuelve el GOID y GENENAME utilizando la base de datos de anotación de humana **org.Hs.eg.db**  @humano. 
+
+- Detectamos algunos valores nulos es las lista de genes, con lo cual los eliminaremos para el análisis.
+
+- Finalmente, utilizaremos la función `enrichGO` para realizar el análisis GO, como `keytable` utilizaremos los código GENEID obtenidos mediante bitr. 
+
+
+```{r sigbio,eval=TRUE}
+listOfTables <- list(NITvsELI=resOrdEN,
+                     SFIvsELI= resOrdSE, 
+                     NITvsSFI= resOrdNS)
+listOfSelected <- list()
+for (i in 1:length(listOfTables)){
+  topTab <- listOfTables[[i]]
+  whichGenes<-unlist(topTab["pvalue"])<0.15
+  selectedIDs <- rownames(topTab)[whichGenes]
+  genex<-AnnotationDbi::select(edb, 
+                               keys=selectedIDs, 
+                               keytype = "GENEID", 
+                               columns = c("SYMBOL", "GENENAME"))
+  genex <- genex$SYMBOL
+  listOfSelected[[i]] <- genex
+  names(listOfSelected)[i] <- names(listOfTables)[i]
+  }
+sapply(listOfSelected, length)
+```
+
+Podemos ver que cada comparación tiene gran cantidad de genes seleccionados (FDR<0.15), estos los utilizaremos para elaborar el análisis GEO. 
+
+
+```{r sigbio2,echo=FALSE,eval=TRUE}
+listOfData <- listOfSelected[1:3]
+comparisonsNames <- names(listOfData)
+```
+
+
+Guardaremos los resultados obtenido mediante CLUSTERprofile mediante tablas tipo archivo ".csv" y los gráfico en formato ".png"
+
+
+```{r sigbio3,eval=FALSE, echo=TRUE}
+for (i in 1:3){
+  comparison <- comparisonsNames[i]
+gene.df <- bitr(na.omit(listOfData[[i]]), fromType = "SYMBOL",
+        toType = c("SYMBOL","GO","GENENAME"),
+        OrgDb = org.Hs.eg.db)
+
+enrich.result <- enrichGO(gene= gene.df$SYMBOL,
+                OrgDb         = org.Hs.eg.db,
+                keyType       = 'SYMBOL',
+                ont           = "ALL",
+                pAdjustMethod = "BH",
+                pvalueCutoff  = 0.05,
+                qvalueCutoff  = 0.2)
+write.csv(as.data.frame(enrich.result),
+file =paste0("result/","CLUSTER_Results_",comparison,".csv"), 
+row.names = FALSE)
+png(file=paste0("result/","CLUSTER_Barplot_",comparison,".png"), 
+     width = 1080, height = 1080, units = 'px')
+print(barplot(enrich.result, showCategory = 15, font.size = 14, 
+    title = paste0("Cluster Profile Analysis for ", comparison,". Barplot")))
+dev.off()
+png(file = paste0("result/","CLUSTER_Cnetplot_",comparison,".png"),
+width = 1080, height = 1080, units = 'px')
+print(cnetplot(enrich.result, categorySize = "geneNum", schowCategory = 15, 
+               vertex.label.cex = 0.75))
+dev.off()
+}
+# Guardamos la información del análisis 
+```
+
+
+Hemos creado diferentes tipos de gráficos que nos permiten visualizar de forma más simple el análisis GEO. 
+
+En las siguientes tablas podemos observar, los términos GO (Gene Ontology) relacionados con cada grupo de genes. La ontología puede ser de tres tipos: *BP* Biological process, *MF* Molecular Function y *CC* Cellular component. También encontramos una breve descripción del término GO,  además *GeneRatio* nos indica la cantidad de genes relacionados con este término GO. 
+
+
+
+```{r sigbio4,eval=TRUE, echo=FALSE,fig.cap="Tabla 12: Resultados Clusterprofiler NIT vs SFI"}
+NITvsSFI <- read.csv("result/CLUSTER_Results_NITvsSFI.csv", 
+                       sep = ",", header = TRUE)
+NITvsSFI<- NITvsSFI[1:4,1:6]
+kable(NITvsSFI, booktabs = TRUE, caption = "Tabla 12: Análisis GEO NIT vs SFI")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+```{r sigbio5,eval=TRUE,echo=FALSE,fig.cap="Tabla 13: Resultados Clusterprofiler SFI vs ELI"}
+SFIvsELI<- read.csv("result/CLUSTER_Results_SFIvsELI.csv", 
+                       sep = ",", header = TRUE)
+SFIvsELI<- SFIvsELI[15:19, 1:6]
+kable(SFIvsELI, booktabs = TRUE, caption = "Tabla 13: Análisis GEO SFI vs ELI")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+```{r sigbio6,eval=TRUE,echo=FALSE,fig.cap="Tabla 14: Resultados Clusterprofiler NIT vs ELI"}
+NITvsELI<- read.csv("result/CLUSTER_Results_NITvsELI.csv", 
+                       sep = ",", header = TRUE)
+NITvsELI<- NITvsELI[50:54, 1:6]
+kable(NITvsELI, booktabs = TRUE, caption = "Tabla 14: Análisis GEO para la interacción")%>%
+  kable_styling(bootstrap_options = "striped", full_width = F, position = "center",font_size = 10)
+```
+
+
+Realizamos las gráficas *Barplot* y *Cnetplot* para observar el análisis GEO en cada constraste.
+
+En una gráfica de barplot podemos ver un diagrama de barras, donde las barras represetan un término GO y el tamaño de la barra dependerá de la cantidad de genes que este término contenga, el color de la barra representan el p-valor de enrequecimiento. Este gráfico solo representa los término GO más significaticos en el análisis. 
+
+Mostraremos las gráfica de barplot de los grupos control contra las infiltraciones cortas focales (NIT vs SFI) y las linfoides extensas (NIT vs ELI).
+
+
+```{r sigbio7,echo=FALSE,fig.cap="Fig. 10: Barplot NIT vs. SFI"}
+knitr::include_graphics("result/CLUSTER_Barplot_NITvsSFI.png")
+```
+
+
+```{r sigbio8,echo=FALSE,fig.cap="Fig. 11: Barplot NIT vs. ELI"}
+knitr::include_graphics("result/CLUSTER_Barplot_NITvsELI.png")
+```
+
+
+Finalmente, el gráfico cnetplot, representa la relación del término GO (concepto biológico) con los genes que lo contienen. Los genes estan representados por su nombre de gene. En este caso mostraremos el gráfico cnetplot para el contraste entre Infiltración corta focal contra la linfoide extensa.
+
+
+```{r sigbio9,echo=FALSE,fig.cap="Fig. 12: Cnetplot SFI vs. ELI"}
+knitr::include_graphics("result/CLUSTER_cnetplot_SFIvsELI.png")
+```
+
+# Resultados
+
+Cabe resaltar que los resultados obtenidos estan ligados a las muestras escogidas, al ser una selección completamente al azar una nueva reproducción de este documento seleccionaría nuestras diferentes con lo cual habría resultados diferentes. También influye la forma en que se han realizado los contrastes, en nuestro caso hemos contrastado los grupos y todos los resultados están enfocados a la diferencia entre estos, de forma que si hubieramos constrastado otra característica de las muestra (como el sexo) podríamos obtener resultados diferentes. 
+
+
+La expresión de un trasncrito depende de muchos factores, se encuentran restringidos a muchos mecanismos de expresión y regulación génica. En cada contraste hemos encontrado transcriptos diferenciados, este análisis es útil debido a que en esos transcritos encontraremos las respuestas que diferencian una condición de otra.
+Con lo cual es necesario conocer tanto los relacionados con esos transcritos como sus procesos biologicos relacionados. 
+
+En este análisis hemos utilizado todas las herramientas necesarias para obtener la información biológica de cada contraste. 
+
+# Referencias
+
+</div>

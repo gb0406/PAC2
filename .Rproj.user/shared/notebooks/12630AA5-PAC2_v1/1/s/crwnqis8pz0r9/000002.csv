@@ -1,0 +1,4 @@
+"0","resSig.ELIvsNIT<- resSig.ELIvsNIT[ order(resSig.ELIvsNIT$log2FoldChange, decreasing = TRUE)]
+"
+"2","Error: subscript contains out-of-bounds indices
+"
